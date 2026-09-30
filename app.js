@@ -8,7 +8,7 @@ const AUTH = (tg && tg.initData) || (qs.get('dev') ? `dev:${qs.get('dev')}:${enc
 const $app = document.getElementById('app');
 
 let S = null;
-const ui = { tab: 'game', pick: 'triple', mode: null, finish: new Set(), form: null, lb: 'season', seasonName: '' };
+const ui = { ev: null, tab: 'game', pick: 'triple', mode: null, finish: new Set(), form: null, lb: 'season', seasonName: '' };
 
 // Раскладка как на трансляции: 10 и 1 сверху, 2–4 справа, 5–6 снизу, 7–9 слева
 // Места по кругу: 1 — справа сверху, дальше по часовой, 10 — слева сверху (как за реальным столом)
@@ -17,6 +17,13 @@ for (let n = 1; n <= 10; n++) {
   const a = (-72 + (n - 1) * 36) * Math.PI / 180;
   POS[n] = [50 + 40 * Math.cos(a), 50 + 40 * Math.sin(a)];
 }
+// Виды выбывания: иконка, подпись, класс
+const OUT = {
+  shot: { icon: 'target', label: 'убит ночью' },
+  vote: { icon: 'like', label: 'заголосован' },
+  zero: { icon: 'like', label: 'сломан в нуле', cls: 'zero' },
+  removed: { icon: 'redcard', label: 'удалён' },
+};
 const COLORS = ['#2f6fe0', '#e0782f', '#8e44c9', '#c0392b', '#16a085', '#1f9d55', '#d63a6e', '#b83280', '#7d6b4f', '#2e8b57'];
 
 const ICON = {
@@ -24,6 +31,7 @@ const ICON = {
   moon: '<svg viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z" fill="#9aa8ff"/></svg>',
   play: '<svg viewBox="0 0 24 24"><path d="M8 5.5v13l10.5-6.5z"/></svg>',
   like: '<svg viewBox="0 0 24 24"><path d="M2 21h3V10H2zM22 11a2 2 0 0 0-2-2h-6.3l1-4.6v-.3c0-.4-.2-.8-.4-1.1L13.2 2 6.6 8.6c-.4.4-.6.9-.6 1.4v9a2 2 0 0 0 2 2h9c.8 0 1.5-.5 1.8-1.2l3-7.1c.1-.2.2-.5.2-.7z"/></svg>',
+  redcard: '<svg viewBox="0 0 24 24"><rect x="6.5" y="2.5" width="11" height="17" rx="2" transform="rotate(10 12 11)"/></svg>',
   target: '<svg viewBox="0 0 24 24" fill="none" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.3" fill="currentColor"/><path d="M12 1v4M12 19v4M1 12h4M19 12h4"/></svg>',
   coin: '<svg class="coin" viewBox="0 0 24 24"><path d="M12 2.5c3.6 4.6 6.5 8.4 6.5 11.8A6.5 6.5 0 0 1 5.5 14.3C5.5 10.9 8.4 7.1 12 2.5z" fill="#9bfa1e"/><path d="M9 14.5a3 3 0 0 0 2.5 3" stroke="#0b0c0a" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg>',
 };
@@ -114,6 +122,8 @@ function renderGame() {
   const vote = r ? r.vote : null;
   const triple = r ? r.triple : [];
   const fin = g.status === 'finished';
+  const lhRound = g.round <= 1;                           // первый круг: только лучший ход (тройка)
+  if (lhRound) ui.pick = 'triple';
   const showTally = r && !g.open && r.tally;
 
   const seats = g.seats.map(s => {
@@ -126,7 +136,8 @@ function renderGame() {
       ui.mode === 'finish' && ui.finish.has(s.n) && 'pick',
     ].filter(Boolean).join(' ');
     const t = showTally && r.tally[s.n] ? `<span class="tally">${r.tally[s.n]}</span>` : '';
-    const outMark = s.out ? `<span class="mark ${s.out.how === 'shot' ? 'shot' : 'voted'}" title="${s.out.how === 'shot' ? 'Убит ночью' : 'Заголосован'}">${s.out.how === 'shot' ? ICON.target : ICON.like}</span>` : '';
+    const o = s.out && (OUT[s.out.how] || OUT.vote);
+    const outMark = o ? `<span class="mark ${s.out.how}" title="${o.label}">${ICON[o.icon]}</span>` : '';
     const face = s.nick ? `<span class="ava">${esc(initials(s.nick))}</span><span class="num">${s.n}</span>` : `<span class="ava big">${s.n}</span>${s.out ? `<span class="num">${s.n}</span>` : ''}`;
     return `<button class="${cls}" data-seat="${s.n}" style="left:${x}%;top:${y}%;--c:${COLORS[s.n - 1]}">
       <span class="tile">${face}${t}${outMark}</span>
@@ -140,11 +151,10 @@ function renderGame() {
     text = `Чёрные: <b>${g.blacks.join(', ')}</b><br>` + (res ? `Твой итог: <b>+${res.points}</b>` : 'Без прогнозов');
     status = 'Игра завершена';
   } else if (g.open) {
-    label = `Круг ${g.round} · жми!`;
-    text = ui.pick === 'triple'
-      ? 'Отметь до трёх подозреваемых'
-      : 'Кого выгоняешь из-за стола?';
-    status = `Голосов: ${r.voters}`; statusLive = true;
+    label = lhRound ? 'Лучший ход' : `Круг ${g.round} · жми!`;
+    text = lhRound ? 'Назови трёх чёрных, как в лучшем ходе'
+      : ui.pick === 'triple' ? 'Отметь до трёх подозреваемых' : 'Кого выгоняешь из-за стола?';
+    status = lhRound ? 'Приём открыт' : `Голосов: ${r.voters}`; statusLive = true;
   } else {
     label = g.round ? `Круг ${g.round}` : 'Знакомство';
     text = 'Слушай речи и жди, когда откроют приём';
@@ -156,29 +166,57 @@ function renderGame() {
     <div class="status ${statusLive ? 'live' : ''}">${esc(status)}</div>
     ${g.stream ? `<button class="stream-btn" data-act="stream" aria-label="Трансляция">${ICON.play}<span>Эфир</span></button>` : ''}
   </div>`;
-  const legend = `<div class="legend"><span class="lg voted">${ICON.like}заголосован</span><span class="lg shot">${ICON.target}убит ночью</span><span class="lg sus"><i></i>моя тройка</span><span class="lg vote"><i></i>мой голос</span></div>`;
+  const legend = `<div class="legend">${Object.entries(OUT).map(([k, o]) => `<span class="lg ${k}">${ICON[o.icon]}${o.label}</span>`).join('')}<span class="lg sus"><i></i>моя тройка</span><span class="lg vote"><i></i>мой голос</span></div>`;
+  const outs = g.seats.filter(x => x.out).sort((a, b) => (a.out.at || '').localeCompare(b.out.at || '') || a.out.round - b.out.round);
+  const outList = outs.length ? `<div class="card"><h3>Выбыли</h3><ul class="rounds">${outs.map(x => {
+    const o = OUT[x.out.how] || OUT.vote;
+    return `<li><span>Круг ${x.out.round} · <b>№${x.n}</b> ${esc(x.nick)}</span><span class="outlbl ${x.out.how}">${ICON[o.icon]}${o.label}</span></li>`;
+  }).join('')}</ul></div>` : '';
 
   const head = `<div class="bar"><img class="logo" src="logo.png" alt="Mafia News Drop">
     <span class="sub"><b>${fin ? 'Итоги' : g.round ? `Круг ${g.round}` : 'Старт'}</b>${esc(g.title)}</span></div>
     ${g.ranked ? '' : `<div class="offrank">Вне зачёта — очки не идут в рейтинг сезона${g.ownerName ? ` · ведёт ${esc(g.ownerName)}` : ''}</div>`}`;
 
-  const picks = !fin ? `
+  const picks = fin ? '' : lhRound ? `
+    <div class="seg ${g.open ? '' : 'disabled'}">
+      <button data-pick="triple" class="on">Лучший ход ${triple.length}/3</button>
+    </div>
+    <div class="picks">Первый круг — только лучший ход. Голосование откроется со второго круга.</div>` : `
     <div class="seg ${g.open ? '' : 'disabled'}">
       <button data-pick="triple" class="${ui.pick === 'triple' ? 'on' : ''}">Тройка ${triple.length}/3</button>
       <button data-pick="vote" class="${ui.pick === 'vote' ? 'on' : ''}">Голос</button>
     </div>
-    <div class="picks">Тройка: <b>${triple.length ? triple.join(', ') : '—'}</b> · Голос: <b>${vote || '—'}</b></div>` : '';
+    <div class="picks">Тройка: <b>${triple.length ? triple.join(', ') : '—'}</b> · Голос: <b>${vote || '—'}</b></div>`;
 
   const hist = g.rounds.length ? `<div class="card"><h3>Мои прогнозы</h3><ul class="rounds">${g.rounds.map(x => {
     const vMark = fin && x.vote ? (g.blacks.includes(x.vote) ? '<span class="hit">✓</span>' : '<span class="miss">✗</span>') : '';
     const tHits = fin ? ` <span class="${x.triple.some(s => g.blacks.includes(s)) ? 'hit' : 'miss'}">(${x.triple.filter(s => g.blacks.includes(s)).length})</span>` : '';
-    return `<li><span>Круг ${x.n}</span><span>тройка ${x.triple.join(', ') || '—'}${tHits} · голос ${x.vote || '—'} ${vMark}</span></li>`;
+    return x.n === 1
+      ? `<li><span>Круг 1</span><span>лучший ход ${x.triple.join(', ') || '—'}${tHits}</span></li>`
+      : `<li><span>Круг ${x.n}</span><span>тройка ${x.triple.join(', ') || '—'}${tHits} · голос ${x.vote || '—'} ${vMark}</span></li>`;
   }).join('')}</ul></div>` : '';
 
   const top = fin && g.top && g.top.length ? `<div class="card"><h3>Лучшие в этой игре</h3><ul class="rounds">${g.top.map((p, i) =>
     `<li><span>${i + 1}. ${esc(p.name)}</span><span class="hit">+${p.points}</span></li>`).join('')}</ul></div>` : '';
 
-  return head + `<div class="table"><div class="felt"></div>${pill}${seats}</div>` + legend + picks + adminPanel(g, canRun, canCreate) + top + hist + hostRequestCard();
+  return head + `<div class="table"><div class="felt"></div>${pill}${seats}</div>` + legend + picks + adminPanel(g, canRun, canCreate) + outList + top + hist + hostRequestCard() + (canRun && ui.ev ? eventSheet(g) : '');
+}
+
+/** Окно «Событие»: тип выбывания + один или несколько игроков (подъём). */
+function eventSheet(g) {
+  const ev = ui.ev;
+  return `<div class="sheet-bg" data-act="evClose"></div>
+  <div class="sheet" role="dialog">
+    <div class="sheet-head"><b>Событие · круг ${Math.max(g.round, 1)}</b><button class="mini" data-act="evClose">Закрыть</button></div>
+    <div class="ev-types">${Object.entries(OUT).map(([k, o]) =>
+      `<button class="ev-type ${k} ${ev.how === k ? 'on' : ''}" data-evhow="${k}">${ICON[o.icon]}<span>${o.label}</span></button>`).join('')}</div>
+    <p class="muted">Выбери игрока${ev.how === 'vote' ? ' (при подъёме — нескольких)' : ''}:</p>
+    <div class="ev-seats">${g.seats.map(x => `<button class="ev-seat ${ev.seats.has(x.n) ? 'on' : ''}" data-evseat="${x.n}" ${x.out ? 'disabled' : ''}>
+      <b>${x.n}</b><span>${x.out ? (OUT[x.out.how] || OUT.vote).label : esc(x.nick || '')}</span></button>`).join('')}</div>
+    <button class="btn primary" data-act="evSave" ${ev.seats.size ? '' : 'disabled'}>Отметить: ${OUT[ev.how].label}${ev.seats.size ? ` — №${[...ev.seats].sort((a, b) => a - b).join(', №')}` : ''}</button>
+    ${g.seats.some(x => x.out) ? `<p class="muted" style="margin-top:14px">Ошиблись? Вернуть в игру:</p><div class="chips">${g.seats.filter(x => x.out).map(x =>
+      `<button class="chip" data-act="evUndo" data-id="${x.n}">№${x.n} ↺</button>`).join('')}</div>` : ''}
+  </div>`;
 }
 
 /** Заявка «стать ведущим» — только для обычных зрителей. */
@@ -195,16 +233,15 @@ function adminPanel(g, canRun, canCreate) {
   if (g.status === 'finished') return canCreate ? adminCreate(g) : '';
   if (!canRun) return '';
   const n = g.round;
-  const modeHint = ui.mode === 'out' ? 'Нажми на игрока, чтобы отметить выбывшего.'
-    : ui.mode === 'finish' ? `Отметь трёх чёрных: выбрано ${ui.finish.size}/3.` : 'Режим зрителя: нажатия на стол — твои прогнозы.';
+  const modeHint = ui.mode === 'finish' ? `Отметь трёх чёрных: выбрано ${ui.finish.size}/3.` : 'Режим зрителя: нажатия на стол — твои прогнозы.';
   return `<div class="card"><h3>${S.me.isAdmin ? 'Админ' : 'Ведущий'}</h3>
     ${g.open
       ? `<button class="btn primary" data-act="close">Закрыть приём · круг ${n}</button>`
       : `<button class="btn primary" data-act="open">Открыть приём · круг ${n + 1}</button>
          ${n ? `<button class="btn" data-act="reopen">Вернуть приём круга ${n}</button>` : ''}`}
+    <button class="btn event" data-act="evOpen">Событие: кто выбыл</button>
     <div class="chips">
       <button class="chip ${!ui.mode ? 'on' : ''}" data-mode="">Прогнозы</button>
-      <button class="chip ${ui.mode === 'out' ? 'on' : ''}" data-mode="out">Выбывшие</button>
       <button class="chip ${ui.mode === 'finish' ? 'on' : ''}" data-mode="finish">Вскрытие ролей</button>
     </div>
     <p class="muted">${modeHint}</p>
@@ -349,11 +386,18 @@ $app.addEventListener('input', e => {
 });
 
 $app.addEventListener('click', async e => {
-  const el = e.target.closest('[data-seat],[data-act],[data-pick],[data-mode],[data-lb],[data-nmode]');
+  const el = e.target.closest('[data-seat],[data-act],[data-pick],[data-mode],[data-lb],[data-nmode],[data-evhow],[data-evseat]');
   if (!el || !S) return;
   const g = S.game;
 
   if (el.dataset.lb) { ui.lb = el.dataset.lb; haptic(); return render(); }
+  if (el.dataset.evhow) { ui.ev.how = el.dataset.evhow; if (ui.ev.how !== 'vote' && ui.ev.seats.size > 1) ui.ev.seats.clear(); haptic(); return render(); }
+  if (el.dataset.evseat) {
+    const n = +el.dataset.evseat, set = ui.ev.seats;
+    if (set.has(n)) set.delete(n);
+    else { if (ui.ev.how !== 'vote') set.clear(); set.add(n); } // несколько — только при подъёме
+    haptic(); return render();
+  }
   if (el.dataset.nmode) { ui.form.mode = el.dataset.nmode; haptic(); return render(); }
   if (el.dataset.pick) { ui.pick = el.dataset.pick; haptic(); return render(); }
   if (el.dataset.mode !== undefined) { ui.mode = el.dataset.mode || null; ui.finish.clear(); haptic(); return render(); }
@@ -385,6 +429,14 @@ $app.addEventListener('click', async e => {
       if (S.game && S.game.status === 'live') ui.form = null;
       break;
     }
+    case 'evOpen': ui.ev = { how: g.round <= 1 ? 'zero' : 'vote', seats: new Set() }; haptic(); return render();
+    case 'evClose': ui.ev = null; return render();
+    case 'evSave': {
+      const seats = [...ui.ev.seats], how = ui.ev.how;
+      ui.ev = null; render();
+      return act('host_out', { seats, how }, `Отмечено: ${OUT[how].label}`);
+    }
+    case 'evUndo': return act('host_out', { seats: [+el.dataset.id], how: null }, 'Игрок возвращён в игру');
     case 'requestHost':
       if (await ask('Отправить админу заявку в ведущие?')) act('request_host', {}, 'Заявка отправлена');
       break;
@@ -403,13 +455,6 @@ async function onSeat(n, g) {
   if (!g || g.status !== 'live') return;
   const seat = g.seats[n - 1];
 
-  if (ui.mode === 'out') {
-    const id = seat.out
-      ? await choose(`№${n}`, seat.nick || `Игрок ${n}`, [{ id: 'back', text: 'Вернуть в игру' }, { type: 'cancel' }])
-      : await choose(`№${n}`, seat.nick || `Игрок ${n}`, [{ id: 'vote', text: 'Заголосован' }, { id: 'shot', text: 'Убит ночью' }, { type: 'cancel' }]);
-    if (id) act('host_out', { seat: n, how: id === 'back' ? null : id });
-    return;
-  }
   if (ui.mode === 'finish') {
     if (ui.finish.has(n)) ui.finish.delete(n);
     else if (ui.finish.size < 3) ui.finish.add(n);
