@@ -1,5 +1,5 @@
 'use strict';
-const APP_VERSION = '4 · шериф и дон'; // меняй вместе с ?v= в index.html
+const APP_VERSION = '5 · картинка итогов'; // меняй вместе с ?v= в index.html
 const tg = window.Telegram && window.Telegram.WebApp;
 try { tg.ready(); tg.expand(); tg.setHeaderColor('#0b0c0a'); tg.setBackgroundColor('#0b0c0a'); } catch (_) {}
 
@@ -248,7 +248,8 @@ function renderGame() {
   const top = fin && g.top && g.top.length ? `<div class="card"><h3>Лучшие в этой игре</h3><ul class="rounds">${g.top.map((p, i) =>
     `<li><span>${i + 1}. ${esc(p.name)}</span><span class="hit">+${p.points}</span></li>`).join('')}</ul></div>` : '';
 
-  return head + `<div class="table"><div class="felt"></div>${pill}${seats}</div>` + legend + picks + adminPanel(g, canRun, canCreate) + outList + top + hist + (canRun && ui.ev ? eventSheet(g) : '');
+  const imgBtn = fin && canRun ? '<button class="btn img" data-act="gameImg">Картинка итогов (PNG)</button>' : '';
+  return head + `<div class="table"><div class="felt"></div>${pill}${seats}</div>` + legend + picks + imgBtn + adminPanel(g, canRun, canCreate) + outList + top + hist + (canRun && ui.ev ? eventSheet(g) : '');
 }
 
 /** Окно «Событие»: тип выбывания + один или несколько игроков (подъём). */
@@ -577,6 +578,7 @@ $app.addEventListener('click', async e => {
   if (el.dataset.seat) return onSeat(+el.dataset.seat, g);
 
   switch (el.dataset.act) {
+    case 'gameImg': makeGameImage(g); break;
     case 'stream':
       try { tg.openLink(g.stream); } catch (_) { window.open(g.stream, '_blank'); }
       break;
@@ -721,6 +723,74 @@ async function onSeat(n, g) {
   haptic();
   r.triple = [...t].sort((a, b) => a - b); render();
   act('triple', { seats: r.triple });
+}
+
+// ---------- картинка итогов игры (квадрат 1080×1080) ----------
+let h2c = null;
+function loadH2C() {
+  if (window.html2canvas) return Promise.resolve();
+  return h2c || (h2c = new Promise((ok, fail) => {
+    const sc = document.createElement('script'); sc.src = 'html2canvas.min.js?v=1';
+    sc.onload = ok; sc.onerror = () => { h2c = null; fail(new Error('Не загрузился модуль картинок')); };
+    document.head.appendChild(sc);
+  }));
+}
+
+/** Квадратная карточка итогов — собирается отдельно от экрана, чтобы всегда помещаться в 540×540 (×2 = 1080). */
+function squareCard(g) {
+  const nick = n => g.seats[n - 1] && g.seats[n - 1].nick;
+  const chip = (n, cls, tag) => `<div class="sq-chip ${cls}"><span class="sq-num">${n}</span><span class="sq-nick">${esc(nick(n) || 'Игрок №' + n)}</span>${tag ? `<em>${tag}</em>` : ''}</div>`;
+  const replay = g.outcome === 'replay';
+  const blacks = g.blacks || [];
+  const top = (g.top || []).filter(p => p.points > 0).slice(0, 3);
+  const sub = [g.tournament && g.gameNo ? `Игра ${g.gameNo}` : '', g.level === 'hard' ? 'сложный уровень' : '', g.ranked ? '' : 'вне зачёта'].filter(Boolean).join(' · ');
+  const roles = replay ? '<div class="sq-replay">Игру переиграют — очки не начислялись</div>' : `
+    <div class="sq-label">Чёрные</div>
+    <div class="sq-chips">${blacks.map(n => chip(n, 'black', n === g.don ? 'дон' : '')).join('')}</div>
+    ${g.sheriff ? `<div class="sq-chips">${chip(g.sheriff, 'sher', 'шериф')}</div>` : ''}`;
+  const best = replay ? '' : top.length ? `
+    <div class="sq-label">Лучшие в угадывании</div>
+    <ol class="sq-top">${top.map((p, i) => `<li><span class="sq-pl p${i + 1}">${i + 1}</span><span class="sq-name">${esc(p.name)}</span><b>+${p.points}</b></li>`).join('')}</ol>`
+    : '<div class="sq-label">Прогнозов в этой игре не было</div>';
+  return `<div class="sq">
+    <div class="sq-head"><img src="logo.png" alt=""><span>Итоги игры</span></div>
+    <div class="sq-title">${esc(g.tournament || g.title)}</div>
+    ${sub ? `<div class="sq-sub">${esc(sub)}</div>` : ''}
+    <div class="sq-outcome">${esc(g.outcomeLabel || 'Игра завершена')}</div>
+    ${roles}
+    ${best}
+    <div class="sq-foot"><span>${g.count ? `Прогнозов: <b>${g.count}</b>` : ''}</span><span>Mafia News Drop · угадай мафию</span></div>
+  </div>`;
+}
+
+async function makeGameImage(g) {
+  toast('Готовлю картинку…');
+  try {
+    await loadH2C();
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'position:fixed;left:-10000px;top:0;width:540px;height:540px;background:#0b0c0a';
+    wrap.innerHTML = squareCard(g);
+    document.body.appendChild(wrap);
+    await Promise.all([...wrap.querySelectorAll('img')].map(i => i.complete ? 0 : new Promise(r => { i.onload = i.onerror = r; })));
+    const canvas = await window.html2canvas(wrap, { scale: 2, width: 540, height: 540, backgroundColor: '#0b0c0a', logging: false });
+    wrap.remove();
+    const data = canvas.toDataURL('image/png');
+    const old = document.getElementById('imgview'); if (old) old.remove();
+    const box = document.createElement('div');
+    box.id = 'imgview';
+    box.innerHTML = `<div class="iv-inner"><img src="${data}" alt="">
+      <p class="muted center">Зажми картинку, чтобы сохранить, или пусть бот пришлёт её тебе.</p>
+      <button class="btn primary" data-iv="me">Прислать мне в Telegram</button>
+      <button class="btn" data-iv="close">Закрыть</button></div>`;
+    box.addEventListener('click', async e => {
+      const b = e.target.closest('[data-iv]'); if (!b) return;
+      if (b.dataset.iv === 'close') return box.remove();
+      b.disabled = true; b.textContent = 'Отправляю…';
+      try { await call('host_image', { png: data.split(',')[1] }); toast('Картинка отправлена тебе в личку от бота'); haptic('ok'); box.remove(); }
+      catch (err) { toast(err.message); b.disabled = false; b.textContent = 'Попробовать ещё раз'; }
+    });
+    document.body.appendChild(box);
+  } catch (e) { toast(e.message || 'Не получилось сделать картинку'); }
 }
 
 // ---------- live ----------
