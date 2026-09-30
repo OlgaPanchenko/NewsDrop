@@ -297,3 +297,18 @@ input { font: inherit; color: var(--text); }
 .switch i { position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%; background: var(--muted); transition: .2s; }
 .switch.on { background: var(--green); border-color: var(--green); }
 .switch.on i { left: 23px; background: #0b0c0a; }
+.trusted { margin-left: 6px; padding: 1px 7px; border-radius: 99px; font-size: 11px; color: #0b0f06; background: var(--green); vertical-align: middle; }
+.lb-list li.adm { cursor: pointer; }
+.lb-list li.adm:active { opacity: .7; }
+
+/* ---------- шериф и дон ---------- */
+.role { position: absolute; left: -6px; bottom: -4px; z-index: 4; width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center;
+  font-size: 10.5px; font-weight: 800; background: #0b0c0a; border: 1.5px dashed currentColor; }
+.role.sh { color: #ffd23f; }
+.role.dn { color: #c58cff; }
+.role.real { border-style: solid; }
+.role.sh.real { background: #ffd23f; color: #0b0c0a; border-color: #ffd23f; }
+.role.dn.real { background: #8e44c9; color: #fff; border-color: #c58cff; }
+.role.inl { position: static; width: 17px; height: 17px; font-size: 9.5px; }
+.seg.three button { font-size: 13px; padding-left: 4px; padding-right: 4px; }
+.hub .nowrap { white-space: nowrap; font-size: 12px; }

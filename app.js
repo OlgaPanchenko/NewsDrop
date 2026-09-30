@@ -8,7 +8,7 @@ const AUTH = (tg && tg.initData) || (qs.get('dev') ? `dev:${qs.get('dev')}:${enc
 const $app = document.getElementById('app');
 
 let S = null;
-const ui = { outcome: null, ev: null, tab: 'game', pick: 'triple', mode: null, finish: new Set(), form: null, lb: 'season', seasonName: '' };
+const ui = { outcome: null, ev: null, tab: 'game', pick: 'triple', mode: null, finish: new Set(), fpick: 'blacks', fSheriff: null, fDon: null, form: null, lb: 'season', seasonName: '' };
 
 // Раскладка как на трансляции: 10 и 1 сверху, 2–4 справа, 5–6 снизу, 7–9 слева
 // Места по кругу: 1 — справа сверху, дальше по часовой, 10 — слева сверху (как за реальным столом)
@@ -108,6 +108,13 @@ function render() {
   // Не перерисовываем, пока админ печатает в поле — иначе слетит фокус
   if (document.activeElement && document.activeElement.matches('#app input, #app textarea')) { pending = true; return; }
   pending = false;
+  if (S.banned) {
+    document.getElementById('nav').style.display = 'none';
+    $app.innerHTML = `<div class="bar"><img class="logo" src="logo.png" alt="Mafia News Drop"></div>
+      <div class="card empty"><h3>Доступ закрыт</h3><p class="muted">Администратор ограничил твоё участие в игре. Если это ошибка — напиши админу канала.</p></div>`;
+    return;
+  }
+  document.getElementById('nav').style.display = '';
   document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === ui.tab));
   $app.innerHTML = ui.tab === 'game' ? renderGame() : ui.tab === 'guide' ? renderGuide(false) : renderRating();
 }
@@ -129,7 +136,16 @@ function renderGame() {
   const replay = fin && g.outcome === 'replay';
   const blacks = (fin && g.blacks) || [];                 // при переигровке может быть пусто
   const lhRound = g.round <= 1;                           // первый круг: только лучший ход (тройка)
-  if (lhRound) ui.pick = 'triple';
+  // первый круг: лучший ход + (по желанию) шериф и дон; дальше — тройка и голос
+  if (lhRound && ui.pick === 'vote') ui.pick = 'triple';
+  if (!lhRound && (ui.pick === 'sheriff' || ui.pick === 'don')) ui.pick = 'triple';
+  const r1 = g.rounds[0] || null;
+  const myRoles = (r1 && r1.roles) || { sheriff: null, don: null };
+  const finishing = ui.mode === 'finish';
+  // на столе: во время вскрытия — выбор ведущего, после игры — настоящие роли, в первом круге — мои догадки
+  const roleSh = finishing ? ui.fSheriff : fin ? g.sheriff : lhRound ? myRoles.sheriff : null;
+  const roleDn = finishing ? ui.fDon : fin ? g.don : lhRound ? myRoles.don : null;
+  const roleReal = finishing || fin;
   const showTally = r && !g.open && r.tally;
   const revealed = g.revealed || {};
   const hard = g.level === 'hard';
@@ -149,9 +165,11 @@ function renderGame() {
     const o = s.out && (OUT[s.out.how] || OUT.vote);
     const rv = revealed[s.n] ? `<span class="rv" title="Вскрыт чёрный с круга ${revealed[s.n]}">Ч</span>` : '';
     const outMark = o ? `<span class="mark ${s.out.how}" title="${o.label}">${ICON[o.icon]}</span>` : '';
+    const roleMark = roleSh === s.n ? `<span class="role sh ${roleReal ? 'real' : ''}" title="Шериф">Ш</span>`
+      : roleDn === s.n ? `<span class="role dn ${roleReal ? 'real' : ''}" title="Дон">Д</span>` : '';
     const face = s.nick ? `<span class="ava">${esc(initials(s.nick))}</span><span class="num">${s.n}</span>` : `<span class="ava big">${s.n}</span>${s.out ? `<span class="num">${s.n}</span>` : ''}`;
     return `<button class="${cls}" data-seat="${s.n}" style="left:${x}%;top:${y}%;--c:${COLORS[s.n - 1]}">
-      <span class="tile">${face}${t}${outMark}${rv}</span>
+      <span class="tile">${face}${t}${outMark}${rv}${roleMark}</span>
       ${s.nick ? `<span class="nick">${esc(s.nick)}</span>` : ''}</button>`;
   }).join('');
 
@@ -160,12 +178,12 @@ function renderGame() {
     const res = g.result;
     label = g.outcomeLabel || 'Вскрытие';
     text = replay ? 'Очки не начисляются, в рейтинг не идёт'
-      : `Чёрные: <b>${blacks.join(', ')}</b><br>` + (res ? `Твой итог: <b>+${res.points}</b>` : 'Без прогнозов');
+      : `Чёрные: <b>${blacks.join(', ')}</b>${g.don ? `<br><span class="nowrap">дон ${g.don} · шериф ${g.sheriff}</span>` : ''}<br>` + (res ? `Твой итог: <b>+${res.points}</b>` : 'Без прогнозов');
     ui.lastRes = res;
     status = 'Игра завершена';
   } else if (g.open) {
     label = lhRound ? 'Лучший ход' : `Круг ${g.round} · жми!`;
-    text = lhRound ? 'Назови трёх чёрных, как в лучшем ходе'
+    text = lhRound ? (ui.pick === 'sheriff' ? 'Кто, по-твоему, шериф?' : ui.pick === 'don' ? 'Кто, по-твоему, дон?' : 'Назови трёх чёрных, как в лучшем ходе')
       : ui.pick === 'triple' ? 'Отметь до трёх подозреваемых' : 'Кого выгоняешь из-за стола?';
     status = lhRound ? 'Приём открыт' : `Голосов: ${r.voters}`; statusLive = true;
   } else {
@@ -179,7 +197,7 @@ function renderGame() {
     <div class="status ${statusLive ? 'live' : ''}">${esc(status)}</div>
     ${g.stream ? `<button class="stream-btn" data-act="stream" aria-label="Трансляция">${ICON.play}<span>Эфир</span></button>` : ''}
   </div>`;
-  const legend = `<div class="legend">${Object.entries(OUT).map(([k, o]) => `<span class="lg ${k}">${ICON[o.icon]}${o.label}</span>`).join('')}<span class="lg sus"><i></i>${lhRound ? 'мой лучший ход' : 'моя тройка — подозреваю'}</span>${lhRound ? '' : '<span class="lg vote"><i></i>мой голос — выгоняю</span>'}</div>`;
+  const legend = `<div class="legend">${Object.entries(OUT).map(([k, o]) => `<span class="lg ${k}">${ICON[o.icon]}${o.label}</span>`).join('')}<span class="lg sus"><i></i>${lhRound ? 'мой лучший ход' : 'моя тройка — подозреваю'}</span>${lhRound ? '' : '<span class="lg vote"><i></i>мой голос — выгоняю</span>'}${lhRound || fin ? `<span class="lg"><b class="role sh inl ${fin ? 'real' : ''}">Ш</b>${fin ? 'шериф' : 'мой шериф'}</span><span class="lg"><b class="role dn inl ${fin ? 'real' : ''}">Д</b>${fin ? 'дон' : 'мой дон'}</span>` : ''}</div>`;
   const outs = g.seats.filter(x => x.out).sort((a, b) => (a.out.at || '').localeCompare(b.out.at || '') || a.out.round - b.out.round);
   const rvList = Object.keys(revealed).length ? `<div class="card"><h3>Вскрытые чёрные</h3><ul class="rounds">${Object.entries(revealed).map(([n, rr]) =>
     `<li><span><b>№${n}</b> ${esc(g.seats[n - 1].nick)}</span><span class="muted">с круга ${rr}${hard ? ' · очков не приносит' : ''}</span></li>`).join('')}</ul></div>` : '';
@@ -193,11 +211,15 @@ function renderGame() {
     ${hard ? `<div class="hardlvl">Сложный уровень · вскрытые чёрные не приносят очков · итог ×${S.scoring.hardMult}</div>` : ''}
     ${g.ranked ? '' : `<div class="offrank">Вне зачёта — очки не идут в рейтинг сезона${g.ownerName ? ` · ведёт ${esc(g.ownerName)}` : ''}</div>`}`;
 
-  const picks = fin ? '' : lhRound ? `
-    <div class="seg ${g.open ? '' : 'disabled'}">
-      <button data-pick="triple" class="on">Лучший ход ${triple.length}/3</button>
+  const spectator = g.hostOnly && g.mine;              // ведущий без участия
+  const picks = fin ? '' : spectator ? `
+    <div class="picks">Ты ведёшь эту игру без участия — прогнозы не делаешь, в итоги не попадаешь.</div>` : lhRound ? `
+    <div class="seg three ${g.open ? '' : 'disabled'}">
+      <button data-pick="triple" class="${ui.pick === 'triple' ? 'on' : ''}">Лучший ход ${triple.length}/3</button>
+      <button data-pick="sheriff" class="${ui.pick === 'sheriff' ? 'on' : ''}">Шериф ${myRoles.sheriff ? '№' + myRoles.sheriff : '—'}</button>
+      <button data-pick="don" class="${ui.pick === 'don' ? 'on' : ''}">Дон ${myRoles.don ? '№' + myRoles.don : '—'}</button>
     </div>
-    <div class="picks">Первый круг — только лучший ход. Голосование откроется со второго круга.</div>` : `
+    <div class="picks">Первый круг — лучший ход. Шерифа и дона можно назвать по желанию: +${S.scoring.sheriff} за каждого угаданного. Голосование — со второго круга.</div>` : `
     <div class="seg ${g.open ? '' : 'disabled'}">
       <button data-pick="triple" class="${ui.pick === 'triple' ? 'on' : ''}">Тройка ${triple.length}/3</button>
       <button data-pick="vote" class="${ui.pick === 'vote' ? 'on' : ''}">Голос</button>
@@ -208,7 +230,7 @@ function renderGame() {
     ${g.open && !triple.length ? '<p class="muted center">Тройку нужно отмечать заново в каждом круге.</p>' : ''}`;
 
   const pr = fin && g.result && g.result.parts;
-  const breakdown = pr ? `<p class="muted">Очки: лучший ход +${pr.lh} · тройки +${pr.triple} · голоса +${pr.vote} · стойкость +${pr.streak}${hard ? ` · сложный уровень ×${S.scoring.hardMult}` : ''} = <b class="hit">${g.result.points}</b></p>` : '';
+  const breakdown = pr ? `<p class="muted">Очки: лучший ход +${pr.lh}${pr.roles ? ` · шериф и дон +${pr.roles}` : ''} · тройки +${pr.triple} · голоса +${pr.vote} · стойкость +${pr.streak}${hard ? ` · сложный уровень ×${S.scoring.hardMult}` : ''} = <b class="hit">${g.result.points}</b></p>` : '';
   const hist = g.rounds.length ? `<div class="card"><h3>Мои прогнозы</h3>${breakdown}<ul class="rounds">${g.rounds.map(x => {
     const show = fin && !replay;
     // на сложном уровне вскрытый чёрный с круга вскрытия не считается попаданием
@@ -216,7 +238,9 @@ function renderGame() {
     const vMark = show && x.vote ? (live(x.vote) ? '<span class="hit">✓</span>' : blacks.includes(x.vote) ? '<span class="miss">Ч</span>' : '<span class="miss">✗</span>') : '';
     const tHits = show ? ` <span class="${x.triple.some(live) ? 'hit' : 'miss'}">(${x.triple.filter(live).length})</span>` : '';
     return x.n === 1
-      ? `<li><span>Круг 1</span><span>лучший ход ${x.triple.join(', ') || '—'}${tHits}</span></li>`
+      ? `<li><span>Круг 1</span><span>лучший ход ${x.triple.join(', ') || '—'}${tHits}${x.roles && (x.roles.sheriff || x.roles.don)
+          ? ` · ш ${x.roles.sheriff || '—'}${show && x.roles.sheriff ? (x.roles.sheriff === g.sheriff ? ' <span class="hit">✓</span>' : ' <span class="miss">✗</span>') : ''}`
+            + ` · д ${x.roles.don || '—'}${show && x.roles.don ? (x.roles.don === g.don ? ' <span class="hit">✓</span>' : ' <span class="miss">✗</span>') : ''}` : ''}</span></li>`
       : `<li><span>Круг ${x.n}</span><span>тройка ${x.triple.join(', ') || '—'}${tHits} · голос ${x.vote || '—'} ${vMark}</span></li>`;
   }).join('')}</ul></div>` : '';
 
@@ -289,8 +313,9 @@ function renderGuide(inline) {
       '<span class="g-chip off">Приём закрыт</span><span class="g-arrow">→</span><span class="g-chip on">Приём открыт</span>')}
     ${step(3, 'Круг 1 — лучший ход',
       `<p>Нажми на трёх игроков, которых считаешь чёрными. На них появится шляпа. Нажми ещё раз — отметка снимется. Голосовать в первом круге нельзя.</p>
-       <p>Это самый дорогой прогноз: информации ещё нет. 1 чёрный — <b>+${sc.lh[1]}</b>, 2 — <b>+${sc.lh[2]}</b>, все 3 — <b>+${sc.lh[3]}</b>.</p>`,
-      seat(2, 'sus', hat) + seat(5, 'sus', hat) + seat(8, 'sus', hat))}
+       <p>Это самый дорогой прогноз: информации ещё нет. 1 чёрный — <b>+${sc.lh[1]}</b>, 2 — <b>+${sc.lh[2]}</b>, все 3 — <b>+${sc.lh[3]}</b>.</p>
+       <p>По желанию там же назови <b>шерифа</b> и <b>дона</b> — кнопки «Шериф» и «Дон» рядом с «Лучшим ходом». Можно только одного из них или никого. Угадал — <b>+${sc.sheriff}</b> за шерифа и <b>+${sc.don}</b> за дона. Назвать их можно только в первом круге.</p>`,
+      seat(2, 'sus', hat) + seat(5, 'sus', hat + '<b class="role dn">Д</b>') + seat(8, 'sus', hat) + seat(4, '', '<b class="role sh">Ш</b>'))}
     ${step(4, 'Со второго круга — тройка и голос',
       `<p>Внизу переключатель <b>«Тройка / Голос»</b>.</p>
        <p><b>Тройка</b> — до трёх подозреваемых. <b>Отмечается заново в каждом круге</b>: уверен в прежних — нажми «Тройка как в прошлом круге».</p>
@@ -303,12 +328,13 @@ function renderGuide(inline) {
       `<p>Ведущий отмечает события по ходу игры. Выбывшие затемняются, а внизу стола появляется список «Выбыли».</p>
        <div class="g-legend">${Object.values(OUT).map(o => `<span class="g-lg ${Object.keys(OUT).find(k => OUT[k] === o)}">${ICON[o.icon]}${o.label}</span>`).join('')}</div>`)}
     ${step(7, 'Вскрытие ролей и очки',
-      `<p>В конце ведущий показывает исход игры и чёрных — они подсвечиваются красным. Очки начисляются сразу:</p>
+      `<p>В конце ведущий показывает исход игры, чёрных (подсвечиваются красным), шерифа и дона. Очки начисляются сразу:</p>
        <table class="g-table"><tr><th></th><th>Круг 2</th><th>Круг 3</th><th>Дальше</th></tr>
          <tr><td>Чёрный в тройке</td><td>+${sc.triple[2]}</td><td>+${sc.triple[3]}</td><td>+${sc.triple[4]}</td></tr>
          <tr><td>Голос в чёрного</td><td>+${sc.vote[2]}</td><td>+${sc.vote[3]}</td><td>+${sc.vote[4]}</td></tr></table>
        <ul class="g-points">
          <li><b>Лучший ход:</b> +${sc.lh[1]} / +${sc.lh[2]} / +${sc.lh[3]} за 1 / 2 / 3 чёрных</li>
+         <li><b>Шериф и дон из первого круга:</b> +${sc.sheriff} и +${sc.don} за угаданного</li>
          <li><b>Стойкость: +${sc.streak}</b> за каждого чёрного, которого ты называл в каждом круге, начиная с первого</li>
        </ul>
        <p class="g-example">Пример: верная тройка с первого круга и без изменений 4 круга → ${sc.lh[3]} + ${3 * sc.triple[2]} + ${3 * sc.triple[3]} + ${3 * sc.triple[4]} + ${3 * sc.streak} = ${sc.lh[3] + 3 * (sc.triple[2] + sc.triple[3] + sc.triple[4] + sc.streak)} newsdrop. Тот, кто понял тех же чёрных только к 4-му кругу, получит ${3 * sc.triple[4]}.</p>
@@ -332,9 +358,11 @@ function adminPanel(g, canRun, canCreate) {
   if (!canRun) return '';
   const n = g.round;
   const isReplay = ui.outcome === 'replay';
-  const canFinish = ui.outcome && (isReplay ? (ui.finish.size === 0 || ui.finish.size === 3) : ui.finish.size === 3);
+  const canFinish = ui.outcome && (isReplay ? (ui.finish.size === 0 || ui.finish.size === 3) : ui.finish.size === 3 && ui.fSheriff && ui.fDon);
   const modeHint = ui.mode === 'finish'
-    ? (isReplay ? 'Переигровка: чёрных можно не отмечать, очки не начислятся.' : `Выбери исход и отметь на столе трёх чёрных: выбрано ${ui.finish.size}/3.`)
+    ? (isReplay ? 'Переигровка: роли можно не отмечать, очки не начислятся.'
+      : ui.fpick === 'sheriff' ? 'Нажми на шерифа.' : ui.fpick === 'don' ? 'Нажми на дона — он должен быть одним из чёрных.'
+      : `Выбери исход, отметь трёх чёрных (${ui.finish.size}/3), затем шерифа и дона.`)
     : 'Режим зрителя: нажатия на стол — твои прогнозы.';
   const rvNow = Object.entries(g.revealed || {});
   const rvRemind = ui.mode === 'finish' && g.level === 'hard'
@@ -352,6 +380,11 @@ function adminPanel(g, canRun, canCreate) {
     </div>
     <p class="muted">${modeHint}</p>
     ${rvRemind}
+    ${ui.mode === 'finish' && !isReplay ? `<div class="seg three">
+        <button data-fpick="blacks" class="${ui.fpick === 'blacks' ? 'on' : ''}">Чёрные ${ui.finish.size}/3</button>
+        <button data-fpick="sheriff" class="${ui.fpick === 'sheriff' ? 'on' : ''}">Шериф ${ui.fSheriff ? '№' + ui.fSheriff : '—'}</button>
+        <button data-fpick="don" class="${ui.fpick === 'don' ? 'on' : ''}">Дон ${ui.fDon ? '№' + ui.fDon : '—'}</button>
+      </div>` : ''}
     ${ui.mode === 'finish' ? `<div class="outcomes">${OUTCOMES.map(([k, l]) =>
         `<button class="chip ${ui.outcome === k ? 'on' : ''} ${k === 'replay' ? 'warn' : ''}" data-outcome="${k}">${l}</button>`).join('')}</div>
       <button class="btn blue" data-act="finish" ${canFinish ? '' : 'disabled'}>${isReplay ? 'Завершить: переигровка' : 'Завершить игру и начислить очки'}</button>` : ''}
@@ -387,7 +420,7 @@ function adminCreate(prev) {
     gameNo: prev?.gameNo ? String(prev.gameNo + 1) : '',
     stream: prev?.stream || '',
     mode: 'list', paste: '', nicks: Array(10).fill(''),
-    unranked: false, hard: prev?.level === 'hard',
+    unranked: false, hard: prev?.level === 'hard', hostOnly: !!prev?.hostOnly,
   };
   const f = ui.form;
   const modeBody = f.mode === 'list'
@@ -415,7 +448,8 @@ function adminCreate(prev) {
       <button class="chip ${f.hard ? 'on' : ''}" data-act="lvl" data-id="1">Сложный ×${S.scoring.hardMult}</button>
     </div>
     ${f.hard ? `<p class="muted">На сложном уровне ты отмечаешь «вскрытых» чёрных — за них перестают давать очки с этого круга.</p>` : ''}
-    ${S.me.isAdmin
+    <label class="check"><input type="checkbox" data-f="hostOnly" ${f.hostOnly ? 'checked' : ''}><span>Только веду — сам не играю (если знаешь роли)</span></label>
+    ${S.me.isAdmin || S.me.isTrusted
       ? `<label class="check"><input type="checkbox" data-f="unranked" ${f.unranked ? 'checked' : ''}><span>Вне зачёта — очки этой игры не пойдут в рейтинг сезона</span></label>`
       : `<p class="muted offrank-note">Твои игры идут вне зачёта: зрители видят результат, но в рейтинг сезона очки не попадают.</p>`}
     <button class="btn primary" data-act="create">Запустить игру и оповестить</button>
@@ -454,7 +488,7 @@ function renderRating() {
     </div>
     ${leader ? `<div class="promo"><b>${leader.id === S.me.id ? 'Ты на вершине' : `Впереди: ${esc(leader.name)}`}</b>
       <span>${leader.id === S.me.id ? 'Лучший нюх на мафию в этом сезоне.' : `До первого места — ${leader.points - (me.points || 0)} newsdrop.`}</span></div>` : ''}
-    ${list.length ? `<ul class="lb-list">${list.map(p => `<li class="${p.id === S.me.id ? 'me' : ''}">
+    ${list.length ? `<ul class="lb-list">${list.map(p => `<li class="${p.id === S.me.id ? 'me' : ''}${S.me.isAdmin && p.id !== S.me.id ? ' adm' : ''}"${S.me.isAdmin && p.id !== S.me.id ? ` data-act="player" data-id="${esc(p.id)}" data-name="${esc(p.name)}"` : ''}>
         <span class="pl">${p.place}</span>${avatar(p.name, p.photo)}<span class="nm">${esc(p.name)}</span>
         <span class="pt">${ICON.coin}${p.points}</span></li>`).join('')}</ul>`
       : `<div class="empty">${seasonTab ? 'Пока пусто — очки начисляются после вскрытия ролей.' : 'Итоги появятся после вскрытия ролей.'}</div>`}
@@ -467,6 +501,7 @@ function renderRating() {
       <input class="field" data-f="seasonName" placeholder="Сезон ${S.season.n + 1}" value="${esc(ui.seasonName)}">
       <button class="btn danger" data-act="newSeason">Начать новый сезон</button></div>` : ''}
     ${S.me.isAdmin && seasonTab ? hostsAdminCard() : ''}
+    ${S.me.isAdmin && seasonTab ? bannedCard() : ''}
     <div class="card notif">
       <div><b>Приглашения на новые игры</b>
         <p class="muted">Бот пишет, когда создана новая игра. Сигналы «приём открыт» приходят только в игре, которую ты открыл.</p></div>
@@ -475,15 +510,25 @@ function renderRating() {
     ${hostRequestLink()}`;
 }
 
+function bannedCard() {
+  const list = S.me.bannedList || [];
+  return `<div class="card"><h3>Блокировки</h3>
+    <p class="muted">Нажми на игрока в таблице выше, чтобы обнулить его очки или заблокировать. Заблокированный не может играть, не получает уведомлений и пропадает из рейтинга.</p>
+    ${list.length ? `<ul class="rounds">${list.map(b => `<li><span>${esc(b.name)}</span>
+      <button class="mini" data-act="unban" data-id="${esc(b.id)}">Разблокировать</button></li>`).join('')}</ul>` : '<p class="muted">Заблокированных нет.</p>'}
+  </div>`;
+}
+
 function hostsAdminCard() {
   const reqs = S.me.requests || [], hs = S.me.hosts || [];
   return `<div class="card"><h3>Ведущие</h3>
-    <p class="muted">Ведущие создают свои игры. Их игры всегда вне зачёта. Одновременно идёт только одна игра на всех.</p>
+    <p class="muted">Ведущие создают свои игры. Игры обычных ведущих идут вне зачёта, игры <b>доверенных</b> — в рейтинг сезона. Одновременно идёт только одна игра на всех.</p>
     ${reqs.length ? `<h4>Заявки</h4><ul class="rounds">${reqs.map(r => `<li><span>${esc(r.name)}${r.username ? ` <span class="muted">@${esc(r.username)}</span>` : ''}</span>
       <span class="acts"><button class="mini ok" data-act="approve" data-id="${esc(r.id)}">Одобрить</button><button class="mini" data-act="reject" data-id="${esc(r.id)}">Отклонить</button></span></li>`).join('')}</ul>`
       : `<p class="muted">Новых заявок нет.</p>`}
-    ${hs.length ? `<h4>Сейчас ведущие</h4><ul class="rounds">${hs.map(h => `<li><span>${esc(h.name)}</span>
-      <button class="mini" data-act="revoke" data-id="${esc(h.id)}">Забрать права</button></li>`).join('')}</ul>` : ''}
+    ${hs.length ? `<h4>Сейчас ведущие</h4><ul class="rounds">${hs.map(h => `<li><span>${esc(h.name)}${h.trusted ? ' <span class="trusted">доверенный</span>' : ''}</span>
+      <span class="acts"><button class="mini ${h.trusted ? '' : 'ok'}" data-act="trust" data-id="${esc(h.id)}" data-on="${h.trusted ? 0 : 1}">${h.trusted ? 'Снять доверие' : 'Доверенный'}</button>
+      <button class="mini" data-act="revoke" data-id="${esc(h.id)}">Забрать права</button></span></li>`).join('')}</ul>` : ''}
   </div>`;
 }
 
@@ -509,7 +554,7 @@ $app.addEventListener('input', e => {
 });
 
 $app.addEventListener('click', async e => {
-  const el = e.target.closest('[data-seat],[data-act],[data-pick],[data-mode],[data-lb],[data-nmode],[data-evhow],[data-evseat],[data-outcome],[data-evround]');
+  const el = e.target.closest('[data-seat],[data-act],[data-pick],[data-fpick],[data-mode],[data-lb],[data-nmode],[data-evhow],[data-evseat],[data-outcome],[data-evround]');
   if (!el || !S) return;
   const g = S.game;
 
@@ -524,7 +569,8 @@ $app.addEventListener('click', async e => {
   }
   if (el.dataset.nmode) { ui.form.mode = el.dataset.nmode; haptic(); return render(); }
   if (el.dataset.pick) { ui.pick = el.dataset.pick; haptic(); return render(); }
-  if (el.dataset.mode !== undefined) { ui.mode = el.dataset.mode || null; ui.finish.clear(); ui.outcome = null; haptic(); return render(); }
+  if (el.dataset.fpick) { ui.fpick = el.dataset.fpick; haptic(); return render(); }
+  if (el.dataset.mode !== undefined) { ui.mode = el.dataset.mode || null; ui.finish.clear(); ui.outcome = null; ui.fpick = 'blacks'; ui.fSheriff = ui.fDon = null; haptic(); return render(); }
   if (el.dataset.outcome) { ui.outcome = el.dataset.outcome; haptic(); return render(); }
   if (el.dataset.seat) return onSeat(+el.dataset.seat, g);
 
@@ -544,11 +590,11 @@ $app.addEventListener('click', async e => {
       const bl = [...ui.finish].sort((a, b) => a - b);
       const q = ui.outcome === 'replay'
         ? 'Завершить игру как переигровку? Очки не начислятся, всем придёт сообщение.'
-        : `${label}. Чёрные: ${bl.join(', ')}. Завершить игру и начислить очки?`;
+        : `${label}. Чёрные: ${bl.join(', ')}, дон ${ui.fDon}, шериф ${ui.fSheriff}. Завершить игру и начислить очки?`;
       if (await ask(q)) {
-        await act('host_finish', { outcome: ui.outcome, blacks: bl },
+        await act('host_finish', { outcome: ui.outcome, blacks: bl, sheriff: ui.fSheriff, don: ui.fDon },
           ui.outcome === 'replay' ? 'Переигровка: очки не начислены' : g.ranked ? 'Игра завершена, очки начислены' : 'Игра завершена (вне зачёта)');
-        ui.mode = null; ui.finish.clear(); ui.outcome = null; ui.form = null; render();
+        ui.mode = null; ui.finish.clear(); ui.outcome = null; ui.form = null; ui.fpick = 'blacks'; ui.fSheriff = ui.fDon = null; render();
       }
       break;
     }
@@ -557,7 +603,7 @@ $app.addEventListener('click', async e => {
       if (!f.tournament.trim() && !f.gameNo.trim() && !(await ask('Не указаны турнир и номер игры. Всё равно запустить?'))) break;
       await act('host_create', {
         tournament: f.tournament, gameNo: f.gameNo, stream: f.stream,
-        nicks: f.mode === 'none' ? [] : f.nicks, unranked: !!f.unranked, hard: !!f.hard,
+        nicks: f.mode === 'none' ? [] : f.nicks, unranked: !!f.unranked, hard: !!f.hard, hostOnly: !!f.hostOnly,
       }, 'Игра создана, зрители получили уведомление');
       if (S.game && S.game.status === 'live') ui.form = null;
       break;
@@ -589,6 +635,34 @@ $app.addEventListener('click', async e => {
       break;
     case 'approve': return act('admin_approve', { id: el.dataset.id }, 'Права ведущего выданы');
     case 'reject': return act('admin_reject', { id: el.dataset.id }, 'Заявка отклонена');
+    case 'player': {
+      const id = el.dataset.id, name = el.dataset.name;
+      const c = await choose(name, 'Что сделать с игроком?', [
+        { id: 'reset', type: 'default', text: 'Обнулить очки' },
+        { id: 'ban', type: 'destructive', text: 'Заблокировать' },
+        { type: 'cancel' },
+      ]);
+      if (c === 'reset') {
+        if (await ask(`Обнулить очки «${name}» в текущем сезоне? Это нельзя отменить.`)) act('admin_resetPoints', { id }, 'Очки обнулены');
+      } else if (c === 'ban') {
+        const how = await choose('Блокировка', `«${name}» не сможет играть и пропадёт из рейтинга. Его очки:`, [
+          { id: 'wipe', type: 'destructive', text: 'Обнулить' },
+          { id: 'keep', type: 'default', text: 'Сохранить' },
+          { type: 'cancel' },
+        ]);
+        if (how) act('admin_ban', { id, name, reset: how === 'wipe' }, 'Игрок заблокирован');
+      }
+      break;
+    }
+    case 'unban':
+      if (await ask('Разблокировать игрока?')) act('admin_unban', { id: el.dataset.id }, 'Игрок разблокирован');
+      break;
+    case 'trust': {
+      const on = el.dataset.on === '1';
+      if (await ask(on ? 'Сделать доверенным? Его игры будут идти в рейтинг сезона.' : 'Снять доверие? Его новые игры пойдут вне зачёта.'))
+        act('admin_trust', { id: el.dataset.id, on }, on ? 'Теперь доверенный ведущий' : 'Доверие снято');
+      break;
+    }
     case 'revoke':
       if (await ask('Забрать права ведущего?')) act('admin_revoke', { id: el.dataset.id }, 'Права забраны');
       break;
@@ -603,14 +677,35 @@ async function onSeat(n, g) {
   const seat = g.seats[n - 1];
 
   if (ui.mode === 'finish') {
-    if (ui.finish.has(n)) ui.finish.delete(n);
-    else if (ui.finish.size < 3) ui.finish.add(n);
+    if (ui.fpick === 'sheriff' && ui.outcome !== 'replay') {
+      if (ui.finish.has(n)) { haptic('err'); return toast('Шериф не может быть чёрным'); }
+      ui.fSheriff = ui.fSheriff === n ? null : n;
+      if (ui.fSheriff && !ui.fDon) ui.fpick = 'don';
+      haptic(); return render();
+    }
+    if (ui.fpick === 'don' && ui.outcome !== 'replay') {
+      if (!ui.finish.has(n)) { haptic('err'); return toast('Дон должен быть среди отмеченных чёрных'); }
+      ui.fDon = ui.fDon === n ? null : n;
+      haptic(); return render();
+    }
+    if (ui.finish.has(n)) { ui.finish.delete(n); if (ui.fDon === n) ui.fDon = null; }
+    else if (ui.finish.size < 3) { ui.finish.add(n); if (ui.fSheriff === n) ui.fSheriff = null; }
     else return toast('Уже выбрано три чёрных');
+    if (ui.finish.size === 3 && !ui.fSheriff && ui.outcome !== 'replay') ui.fpick = 'sheriff'; // дальше — шериф
     haptic(); return render();
   }
 
+  if (g.hostOnly && g.mine) { haptic('err'); return toast('Ты ведёшь без участия — прогнозы недоступны'); }
   if (!g.open) { haptic('err'); return toast('Приём закрыт — ждём голосования на трансляции'); }
   const r = g.rounds[g.rounds.length - 1];
+  if ((ui.pick === 'sheriff' || ui.pick === 'don') && g.round <= 1) {
+    const kind = ui.pick, other = kind === 'sheriff' ? 'don' : 'sheriff';
+    r.roles = r.roles || { sheriff: null, don: null };
+    const val = r.roles[kind] === n ? null : n;
+    if (val && r.roles[other] === val) { haptic('err'); return toast(kind === 'sheriff' ? 'Этого игрока ты уже назвал доном' : 'Этого игрока ты уже назвал шерифом'); }
+    r.roles[kind] = val; haptic(); render();
+    return act('role', { kind, seat: val });
+  }
   if (ui.pick === 'vote') {
     if (seat.out) return toast('Игрок уже выбыл');
     haptic();
