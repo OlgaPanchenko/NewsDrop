@@ -8,7 +8,7 @@ const AUTH = (tg && tg.initData) || (qs.get('dev') ? `dev:${qs.get('dev')}:${enc
 const $app = document.getElementById('app');
 
 let S = null;
-const ui = { ev: null, tab: 'game', pick: 'triple', mode: null, finish: new Set(), form: null, lb: 'season', seasonName: '' };
+const ui = { outcome: null, ev: null, tab: 'game', pick: 'triple', mode: null, finish: new Set(), form: null, lb: 'season', seasonName: '' };
 
 // Раскладка как на трансляции: 10 и 1 сверху, 2–4 справа, 5–6 снизу, 7–9 слева
 // Места по кругу: 1 — справа сверху, дальше по часовой, 10 — слева сверху (как за реальным столом)
@@ -24,6 +24,10 @@ const OUT = {
   zero: { icon: 'like', label: 'сломан в нуле', cls: 'zero' },
   removed: { icon: 'redcard', label: 'удалён' },
 };
+const OUTCOMES = [
+  ['mafia33', 'Победа мафии 3/3'], ['mafia22', 'Победа мафии 2/2'], ['mafia', 'Победа мафии'],
+  ['town', 'Победа мирных'], ['ppk', 'ППК'], ['replay', 'Переигровка'],
+];
 const COLORS = ['#2f6fe0', '#e0782f', '#8e44c9', '#c0392b', '#16a085', '#1f9d55', '#d63a6e', '#b83280', '#7d6b4f', '#2e8b57'];
 
 const ICON = {
@@ -105,7 +109,7 @@ function render() {
   if (document.activeElement && document.activeElement.matches('#app input, #app textarea')) { pending = true; return; }
   pending = false;
   document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === ui.tab));
-  $app.innerHTML = ui.tab === 'game' ? renderGame() : renderRating();
+  $app.innerHTML = ui.tab === 'game' ? renderGame() : ui.tab === 'guide' ? renderGuide(false) : renderRating();
 }
 document.addEventListener('focusout', () => setTimeout(() => { if (pending) render(); }, 0));
 
@@ -116,15 +120,20 @@ function renderGame() {
   if (!g) {
     return `<div class="bar"><img class="logo" src="logo.png" alt="Mafia News Drop"><span class="sub"><b>Ждём игру</b></span></div>
       <div class="card empty">Игра ещё не запущена. Бот пришлёт уведомление, когда ведущий её создаст.</div>
-      ${canCreate ? adminCreate() : ''}${hostRequestCard()}`;
+      ${canCreate ? adminCreate() : ''}${hostHint()}${renderGuide(true)}`;
   }
   const r = g.rounds[g.rounds.length - 1] || null;
   const vote = r ? r.vote : null;
   const triple = r ? r.triple : [];
   const fin = g.status === 'finished';
+  const replay = fin && g.outcome === 'replay';
+  const blacks = (fin && g.blacks) || [];                 // при переигровке может быть пусто
   const lhRound = g.round <= 1;                           // первый круг: только лучший ход (тройка)
   if (lhRound) ui.pick = 'triple';
   const showTally = r && !g.open && r.tally;
+  const revealed = g.revealed || {};
+  const hard = g.level === 'hard';
+  const prev = g.rounds.length > 1 ? g.rounds[g.rounds.length - 2] : null;
 
   const seats = g.seats.map(s => {
     const [x, y] = POS[s.n];
@@ -132,23 +141,27 @@ function renderGame() {
       s.out && 'out',
       vote === s.n && 'vote',
       triple.includes(s.n) && 'sus',
-      fin && g.blacks.includes(s.n) && 'black',
+      blacks.includes(s.n) && 'black',
+      revealed[s.n] && 'revealed',
       ui.mode === 'finish' && ui.finish.has(s.n) && 'pick',
     ].filter(Boolean).join(' ');
     const t = showTally && r.tally[s.n] ? `<span class="tally">${r.tally[s.n]}</span>` : '';
     const o = s.out && (OUT[s.out.how] || OUT.vote);
+    const rv = revealed[s.n] ? `<span class="rv" title="Вскрыт чёрный с круга ${revealed[s.n]}">Ч</span>` : '';
     const outMark = o ? `<span class="mark ${s.out.how}" title="${o.label}">${ICON[o.icon]}</span>` : '';
     const face = s.nick ? `<span class="ava">${esc(initials(s.nick))}</span><span class="num">${s.n}</span>` : `<span class="ava big">${s.n}</span>${s.out ? `<span class="num">${s.n}</span>` : ''}`;
     return `<button class="${cls}" data-seat="${s.n}" style="left:${x}%;top:${y}%;--c:${COLORS[s.n - 1]}">
-      <span class="tile">${face}${t}${outMark}</span>
+      <span class="tile">${face}${t}${outMark}${rv}</span>
       ${s.nick ? `<span class="nick">${esc(s.nick)}</span>` : ''}</button>`;
   }).join('');
 
   let label, text, status, statusLive = false;
   if (fin) {
     const res = g.result;
-    label = 'Вскрытие';
-    text = `Чёрные: <b>${g.blacks.join(', ')}</b><br>` + (res ? `Твой итог: <b>+${res.points}</b>` : 'Без прогнозов');
+    label = g.outcomeLabel || 'Вскрытие';
+    text = replay ? 'Очки не начисляются, в рейтинг не идёт'
+      : `Чёрные: <b>${blacks.join(', ')}</b><br>` + (res ? `Твой итог: <b>+${res.points}</b>` : 'Без прогнозов');
+    ui.lastRes = res;
     status = 'Игра завершена';
   } else if (g.open) {
     label = lhRound ? 'Лучший ход' : `Круг ${g.round} · жми!`;
@@ -166,15 +179,18 @@ function renderGame() {
     <div class="status ${statusLive ? 'live' : ''}">${esc(status)}</div>
     ${g.stream ? `<button class="stream-btn" data-act="stream" aria-label="Трансляция">${ICON.play}<span>Эфир</span></button>` : ''}
   </div>`;
-  const legend = `<div class="legend">${Object.entries(OUT).map(([k, o]) => `<span class="lg ${k}">${ICON[o.icon]}${o.label}</span>`).join('')}<span class="lg sus"><i></i>моя тройка</span><span class="lg vote"><i></i>мой голос</span></div>`;
+  const legend = `<div class="legend">${Object.entries(OUT).map(([k, o]) => `<span class="lg ${k}">${ICON[o.icon]}${o.label}</span>`).join('')}<span class="lg sus"><i></i>${lhRound ? 'мой лучший ход' : 'моя тройка — подозреваю'}</span>${lhRound ? '' : '<span class="lg vote"><i></i>мой голос — выгоняю</span>'}</div>`;
   const outs = g.seats.filter(x => x.out).sort((a, b) => (a.out.at || '').localeCompare(b.out.at || '') || a.out.round - b.out.round);
-  const outList = outs.length ? `<div class="card"><h3>Выбыли</h3><ul class="rounds">${outs.map(x => {
+  const rvList = Object.keys(revealed).length ? `<div class="card"><h3>Вскрытые чёрные</h3><ul class="rounds">${Object.entries(revealed).map(([n, rr]) =>
+    `<li><span><b>№${n}</b> ${esc(g.seats[n - 1].nick)}</span><span class="muted">с круга ${rr}${hard ? ' · очков не приносит' : ''}</span></li>`).join('')}</ul></div>` : '';
+  const outList = rvList + (outs.length ? `<div class="card"><h3>Выбыли</h3><ul class="rounds">${outs.map(x => {
     const o = OUT[x.out.how] || OUT.vote;
     return `<li><span>Круг ${x.out.round} · <b>№${x.n}</b> ${esc(x.nick)}</span><span class="outlbl ${x.out.how}">${ICON[o.icon]}${o.label}</span></li>`;
-  }).join('')}</ul></div>` : '';
+  }).join('')}</ul></div>` : '');
 
   const head = `<div class="bar"><img class="logo" src="logo.png" alt="Mafia News Drop">
     <span class="sub"><b>${fin ? 'Итоги' : g.round ? `Круг ${g.round}` : 'Старт'}</b>${esc(g.title)}</span></div>
+    ${hard ? `<div class="hardlvl">Сложный уровень · вскрытые чёрные не приносят очков · итог ×${S.scoring.hardMult}</div>` : ''}
     ${g.ranked ? '' : `<div class="offrank">Вне зачёта — очки не идут в рейтинг сезона${g.ownerName ? ` · ведёт ${esc(g.ownerName)}` : ''}</div>`}`;
 
   const picks = fin ? '' : lhRound ? `
@@ -186,11 +202,19 @@ function renderGame() {
       <button data-pick="triple" class="${ui.pick === 'triple' ? 'on' : ''}">Тройка ${triple.length}/3</button>
       <button data-pick="vote" class="${ui.pick === 'vote' ? 'on' : ''}">Голос</button>
     </div>
-    <div class="picks">Тройка: <b>${triple.length ? triple.join(', ') : '—'}</b> · Голос: <b>${vote || '—'}</b></div>`;
+    <div class="picks">Тройка: <b>${triple.length ? triple.join(', ') : '—'}</b> · Голос: <b>${vote || '—'}</b></div>
+    ${g.open && prev && prev.triple.length && prev.triple.join() !== triple.join()
+      ? `<button class="btn copy" data-act="copyPrev">Тройка как в прошлом круге: ${prev.triple.join(', ')}</button>` : ''}
+    ${g.open && !triple.length ? '<p class="muted center">Тройку нужно отмечать заново в каждом круге.</p>' : ''}`;
 
-  const hist = g.rounds.length ? `<div class="card"><h3>Мои прогнозы</h3><ul class="rounds">${g.rounds.map(x => {
-    const vMark = fin && x.vote ? (g.blacks.includes(x.vote) ? '<span class="hit">✓</span>' : '<span class="miss">✗</span>') : '';
-    const tHits = fin ? ` <span class="${x.triple.some(s => g.blacks.includes(s)) ? 'hit' : 'miss'}">(${x.triple.filter(s => g.blacks.includes(s)).length})</span>` : '';
+  const pr = fin && g.result && g.result.parts;
+  const breakdown = pr ? `<p class="muted">Очки: лучший ход +${pr.lh} · тройки +${pr.triple} · голоса +${pr.vote} · стойкость +${pr.streak}${hard ? ` · сложный уровень ×${S.scoring.hardMult}` : ''} = <b class="hit">${g.result.points}</b></p>` : '';
+  const hist = g.rounds.length ? `<div class="card"><h3>Мои прогнозы</h3>${breakdown}<ul class="rounds">${g.rounds.map(x => {
+    const show = fin && !replay;
+    // на сложном уровне вскрытый чёрный с круга вскрытия не считается попаданием
+    const live = s => blacks.includes(s) && !(hard && revealed[s] && revealed[s] <= x.n);
+    const vMark = show && x.vote ? (live(x.vote) ? '<span class="hit">✓</span>' : blacks.includes(x.vote) ? '<span class="miss">Ч</span>' : '<span class="miss">✗</span>') : '';
+    const tHits = show ? ` <span class="${x.triple.some(live) ? 'hit' : 'miss'}">(${x.triple.filter(live).length})</span>` : '';
     return x.n === 1
       ? `<li><span>Круг 1</span><span>лучший ход ${x.triple.join(', ') || '—'}${tHits}</span></li>`
       : `<li><span>Круг ${x.n}</span><span>тройка ${x.triple.join(', ') || '—'}${tHits} · голос ${x.vote || '—'} ${vMark}</span></li>`;
@@ -199,53 +223,138 @@ function renderGame() {
   const top = fin && g.top && g.top.length ? `<div class="card"><h3>Лучшие в этой игре</h3><ul class="rounds">${g.top.map((p, i) =>
     `<li><span>${i + 1}. ${esc(p.name)}</span><span class="hit">+${p.points}</span></li>`).join('')}</ul></div>` : '';
 
-  return head + `<div class="table"><div class="felt"></div>${pill}${seats}</div>` + legend + picks + adminPanel(g, canRun, canCreate) + outList + top + hist + hostRequestCard() + (canRun && ui.ev ? eventSheet(g) : '');
+  return head + `<div class="table"><div class="felt"></div>${pill}${seats}</div>` + legend + picks + adminPanel(g, canRun, canCreate) + outList + top + hist + (canRun && ui.ev ? eventSheet(g) : '');
 }
 
 /** Окно «Событие»: тип выбывания + один или несколько игроков (подъём). */
 function eventSheet(g) {
   const ev = ui.ev;
+  const isRv = ev.how === 'reveal', rvd = g.revealed || {};
   return `<div class="sheet-bg" data-act="evClose"></div>
   <div class="sheet" role="dialog">
     <div class="sheet-head"><b>Событие · круг ${Math.max(g.round, 1)}</b><button class="mini" data-act="evClose">Закрыть</button></div>
     <div class="ev-types">${Object.entries(OUT).map(([k, o]) =>
-      `<button class="ev-type ${k} ${ev.how === k ? 'on' : ''}" data-evhow="${k}">${ICON[o.icon]}<span>${o.label}</span></button>`).join('')}</div>
+      `<button class="ev-type ${k} ${ev.how === k ? 'on' : ''}" data-evhow="${k}">${ICON[o.icon]}<span>${o.label}</span></button>`).join('')}
+      <button class="ev-type reveal wide ${ev.how === 'reveal' ? 'on' : ''}" data-evhow="reveal"><span class="rv-ico">Ч</span><span>вскрыт чёрный (достоверно)</span></button></div>
+    ${isRv ? `<p class="muted">С какого круга он известен всем? Если забыли отметить вовремя — выбери нужный круг задним числом.</p>
+      <div class="chips">${Array.from({ length: Math.max(g.round, 1) }, (_, i) => i + 1).map(k =>
+        `<button class="chip ${ev.round === k ? 'on' : ''}" data-evround="${k}">круг ${k}</button>`).join('')}</div>` : ''}
     <p class="muted">Выбери игрока${ev.how === 'vote' ? ' (при подъёме — нескольких)' : ''}:</p>
-    <div class="ev-seats">${g.seats.map(x => `<button class="ev-seat ${ev.seats.has(x.n) ? 'on' : ''}" data-evseat="${x.n}" ${x.out ? 'disabled' : ''}>
-      <b>${x.n}</b><span>${x.out ? (OUT[x.out.how] || OUT.vote).label : esc(x.nick || '')}</span></button>`).join('')}</div>
-    <button class="btn primary" data-act="evSave" ${ev.seats.size ? '' : 'disabled'}>Отметить: ${OUT[ev.how].label}${ev.seats.size ? ` — №${[...ev.seats].sort((a, b) => a - b).join(', №')}` : ''}</button>
+    <div class="ev-seats">${g.seats.map(x => {
+      const off = isRv ? !!rvd[x.n] : !!x.out;
+      const sub = isRv && rvd[x.n] ? 'вскрыт' : x.out ? (OUT[x.out.how] || OUT.vote).label : esc(x.nick || '');
+      return `<button class="ev-seat ${ev.seats.has(x.n) ? 'on' : ''}" data-evseat="${x.n}" ${off ? 'disabled' : ''}><b>${x.n}</b><span>${sub}</span></button>`;
+    }).join('')}</div>
+    <button class="btn primary" data-act="evSave" ${ev.seats.size ? '' : 'disabled'}>${isRv ? `Вскрыт чёрный с круга ${ev.round}` : `Отметить: ${OUT[ev.how].label}`}${ev.seats.size ? ` — №${[...ev.seats].sort((a, b) => a - b).join(', №')}` : ''}</button>
+    ${Object.keys(rvd).length ? `<p class="muted" style="margin-top:14px">Снять отметку «вскрыт»:</p><div class="chips">${Object.keys(rvd).map(n =>
+      `<button class="chip" data-act="rvUndo" data-id="${n}">№${n} Ч ↺</button>`).join('')}</div>` : ''}
     ${g.seats.some(x => x.out) ? `<p class="muted" style="margin-top:14px">Ошиблись? Вернуть в игру:</p><div class="chips">${g.seats.filter(x => x.out).map(x =>
       `<button class="chip" data-act="evUndo" data-id="${x.n}">№${x.n} ↺</button>`).join('')}</div>` : ''}
   </div>`;
 }
 
-/** Заявка «стать ведущим» — только для обычных зрителей. */
-function hostRequestCard() {
+/** Подсказка о ведущих — только пока игры нет; закрывается крестиком и больше не показывается. */
+function hostHint() {
+  if (S.me.role !== 'viewer' || S.me.requested || store.get('hideHostHint')) return '';
+  return `<div class="hint"><span>Хочешь вести свои игры для друзей? Заявку в ведущие можно подать во вкладке «Рейтинг».</span>
+    <button class="hint-x" data-act="hideHint" aria-label="Закрыть">×</button></div>`;
+}
+/** Маленькая кнопка внизу рейтинга. */
+function hostRequestLink() {
   if (S.me.role !== 'viewer') return '';
   return S.me.requested
-    ? `<div class="card req"><h3>Заявка в ведущие отправлена</h3><p class="muted">Админ рассмотрит её и пришлёт ответ в бота.</p></div>`
-    : `<div class="card req"><h3>Хочешь вести свои игры?</h3>
-        <p class="muted">Ведущий создаёт игры для своей компании. Такие игры идут вне зачёта — в рейтинг сезона не попадают.</p>
-        <button class="btn" data-act="requestHost">Подать заявку в ведущие</button></div>`;
+    ? `<p class="muted host-link">Заявка в ведущие отправлена — ответ придёт в бота.</p>`
+    : `<button class="host-link btn-link" data-act="requestHost">Стать ведущим</button>`;
+}
+// localStorage в Telegram может быть недоступен — не падаем
+const store = {
+  get(k) { try { return localStorage.getItem('nd_' + k); } catch (_) { return null; } },
+  set(k, v) { try { localStorage.setItem('nd_' + k, v); } catch (_) {} },
+};
+
+/** Инструкция для зрителя. inline=true — показываем на экране «Ждём игру» под сообщением. */
+function renderGuide(inline) {
+  const sc = S.scoring;
+  const seat = (n, cls = '', extra = '') => `<span class="g-seat ${cls}" style="--c:${COLORS[n - 1]}"><span class="g-tile">${n}${extra}</span></span>`;
+  const step = (n, title, body, pic = '') => `<li class="g-step"><span class="g-num">${n}</span>
+    <div class="g-body"><b>${title}</b>${body}${pic ? `<div class="g-pic">${pic}</div>` : ''}</div></li>`;
+  const hat = '<i class="g-hat"></i>';
+  return `${inline ? '<h2 class="g-h2">Как играть</h2>' : `<div class="g-head"><img class="logo big" src="logo.png" alt="Mafia News Drop">
+      <h1>Как играть</h1><p class="muted">Смотришь трансляцию мафии и угадываешь, кто за столом чёрные. Чем точнее — тем выше в рейтинге.</p></div>`}
+  <ol class="g-steps">
+    ${step(1, 'Открой игру и включи эфир',
+      '<p>Игра открывается через нашего бота — кнопка «Играть». Нажми в боте «Старт», чтобы получать уведомления. Трансляция — кнопка «Эфир» в центре стола.</p>')}
+    ${step(2, 'Жди сигнала «приём открыт»',
+      '<p>Прогнозы принимаются, пока идёт голосование на трансляции. Бот пришлёт уведомление, а центр стола загорится зелёным. Пока приём закрыт — нажатия не работают.</p>',
+      '<span class="g-chip off">Приём закрыт</span><span class="g-arrow">→</span><span class="g-chip on">Приём открыт</span>')}
+    ${step(3, 'Круг 1 — лучший ход',
+      `<p>Нажми на трёх игроков, которых считаешь чёрными. На них появится шляпа. Нажми ещё раз — отметка снимется. Голосовать в первом круге нельзя.</p>
+       <p>Это самый дорогой прогноз: информации ещё нет. 1 чёрный — <b>+${sc.lh[1]}</b>, 2 — <b>+${sc.lh[2]}</b>, все 3 — <b>+${sc.lh[3]}</b>.</p>`,
+      seat(2, 'sus', hat) + seat(5, 'sus', hat) + seat(8, 'sus', hat))}
+    ${step(4, 'Со второго круга — тройка и голос',
+      `<p>Внизу переключатель <b>«Тройка / Голос»</b>.</p>
+       <p><b>Тройка</b> — до трёх подозреваемых. <b>Отмечается заново в каждом круге</b>: уверен в прежних — нажми «Тройка как в прошлом круге».</p>
+       <p><b>Голос</b> — один игрок, которого ты выгоняешь в этом круге, как на голосовании за столом. Подсвечивается зелёным. Каждый круг голосуешь заново.</p>`,
+      '<span class="g-switch"><span class="on">Тройка</span><span>Голос</span></span>' + seat(5, 'vote'))}
+    ${step(5, 'Приём закрыт — смотри, как проголосовали друзья',
+      '<p>Выбор фиксируется. Рядом с игроками появятся цифры — сколько человек проголосовали за каждого. Пока приём открыт, чужие голоса скрыты.</p>',
+      seat(5, 'vote', '<span class="g-tally">3</span>') + seat(2, '', '<span class="g-tally">1</span>'))}
+    ${step(6, 'Кто выбыл',
+      `<p>Ведущий отмечает события по ходу игры. Выбывшие затемняются, а внизу стола появляется список «Выбыли».</p>
+       <div class="g-legend">${Object.values(OUT).map(o => `<span class="g-lg ${Object.keys(OUT).find(k => OUT[k] === o)}">${ICON[o.icon]}${o.label}</span>`).join('')}</div>`)}
+    ${step(7, 'Вскрытие ролей и очки',
+      `<p>В конце ведущий показывает исход игры и чёрных — они подсвечиваются красным. Очки начисляются сразу:</p>
+       <table class="g-table"><tr><th></th><th>Круг 2</th><th>Круг 3</th><th>Дальше</th></tr>
+         <tr><td>Чёрный в тройке</td><td>+${sc.triple[2]}</td><td>+${sc.triple[3]}</td><td>+${sc.triple[4]}</td></tr>
+         <tr><td>Голос в чёрного</td><td>+${sc.vote[2]}</td><td>+${sc.vote[3]}</td><td>+${sc.vote[4]}</td></tr></table>
+       <ul class="g-points">
+         <li><b>Лучший ход:</b> +${sc.lh[1]} / +${sc.lh[2]} / +${sc.lh[3]} за 1 / 2 / 3 чёрных</li>
+         <li><b>Стойкость: +${sc.streak}</b> за каждого чёрного, которого ты называл в каждом круге, начиная с первого</li>
+       </ul>
+       <p class="g-example">Пример: верная тройка с первого круга и без изменений 4 круга → ${sc.lh[3]} + ${3 * sc.triple[2]} + ${3 * sc.triple[3]} + ${3 * sc.triple[4]} + ${3 * sc.streak} = ${sc.lh[3] + 3 * (sc.triple[2] + sc.triple[3] + sc.triple[4] + sc.streak)} newsdrop. Тот, кто понял тех же чёрных только к 4-му кругу, получит ${3 * sc.triple[4]}.</p>
+       <p><b>Сложный уровень</b> (если ведущий его включил): чёрный, которого вскрыли достоверно, перестаёт приносить очки с этого круга — всё набранное раньше сохраняется. Итог умножается на ${sc.hardMult}.</p>`,
+      seat(2, 'black') + seat(5, 'black') + seat(7, 'black'))}
+    ${step(8, 'Рейтинг сезона',
+      '<p>Newsdrop копятся весь сезон. Во вкладке «Рейтинг» — твоё место, уровень (каждые 10 newsdrop) и процент попаданий голосом. Новый сезон начинается с нуля, старая таблица сохраняется.</p>')}
+  </ol>
+  <div class="card g-faq"><h3>Частые вопросы</h3>
+    <details><summary>Не приходят уведомления</summary><p>Открой бота и нажми «Старт». Уведомления приходят только тем, кто хотя бы раз открывал игру.</p></details>
+    <details><summary>Слишком много уведомлений</summary><p>Сигналы «приём открыт» приходят только в игре, которую ты открыл сегодня. Приглашения на новые игры можно выключить: вкладка «Рейтинг» → «Приглашения на новые игры».</p></details>
+    <details><summary>Не получается нажать на игрока</summary><p>Скорее всего, приём закрыт — дождись голосования на трансляции. За выбывшего проголосовать нельзя.</p></details>
+    <details><summary>Можно передумать?</summary><p>Да, пока приём открыт — меняй тройку и голос сколько угодно. В зачёт идёт последний выбор.</p></details>
+    <details><summary>Что значит «вне зачёта» и «переигровка»?</summary><p>«Вне зачёта» — игра для развлечения, очки в рейтинг сезона не идут. «Переигровка» — игру пересыграют, очки не начисляются никому.</p></details>
+    <details><summary>Откуда моё имя в рейтинге?</summary><p>Из твоего профиля Telegram. Регистрация не нужна — Telegram сам передаёт имя и фото, когда ты открываешь игру через бота.</p></details>
+  </div>`;
 }
 
 function adminPanel(g, canRun, canCreate) {
   if (g.status === 'finished') return canCreate ? adminCreate(g) : '';
   if (!canRun) return '';
   const n = g.round;
-  const modeHint = ui.mode === 'finish' ? `Отметь трёх чёрных: выбрано ${ui.finish.size}/3.` : 'Режим зрителя: нажатия на стол — твои прогнозы.';
+  const isReplay = ui.outcome === 'replay';
+  const canFinish = ui.outcome && (isReplay ? (ui.finish.size === 0 || ui.finish.size === 3) : ui.finish.size === 3);
+  const modeHint = ui.mode === 'finish'
+    ? (isReplay ? 'Переигровка: чёрных можно не отмечать, очки не начислятся.' : `Выбери исход и отметь на столе трёх чёрных: выбрано ${ui.finish.size}/3.`)
+    : 'Режим зрителя: нажатия на стол — твои прогнозы.';
+  const rvNow = Object.entries(g.revealed || {});
+  const rvRemind = ui.mode === 'finish' && g.level === 'hard'
+    ? `<div class="hardlvl left">Сложный уровень. Проверь вскрытых чёрных перед завершением: ${rvNow.length ? rvNow.map(([n, rr]) => `№${n} с круга ${rr}`).join(', ') : '<b>никто не отмечен</b>'}.
+       Если кого-то забыли — «Событие» → «вскрыт чёрный», круг можно выбрать задним числом.</div>` : '';
   return `<div class="card"><h3>${S.me.isAdmin ? 'Админ' : 'Ведущий'}</h3>
     ${g.open
       ? `<button class="btn primary" data-act="close">Закрыть приём · круг ${n}</button>`
       : `<button class="btn primary" data-act="open">Открыть приём · круг ${n + 1}</button>
          ${n ? `<button class="btn" data-act="reopen">Вернуть приём круга ${n}</button>` : ''}`}
-    <button class="btn event" data-act="evOpen">Событие: кто выбыл</button>
+    <button class="btn event" data-act="evOpen">Событие: выбыл / вскрыт чёрный</button>
     <div class="chips">
       <button class="chip ${!ui.mode ? 'on' : ''}" data-mode="">Прогнозы</button>
       <button class="chip ${ui.mode === 'finish' ? 'on' : ''}" data-mode="finish">Вскрытие ролей</button>
     </div>
     <p class="muted">${modeHint}</p>
-    ${ui.mode === 'finish' ? `<button class="btn blue" data-act="finish" ${ui.finish.size === 3 ? '' : 'disabled'}>Завершить игру и начислить очки</button>` : ''}
+    ${rvRemind}
+    ${ui.mode === 'finish' ? `<div class="outcomes">${OUTCOMES.map(([k, l]) =>
+        `<button class="chip ${ui.outcome === k ? 'on' : ''} ${k === 'replay' ? 'warn' : ''}" data-outcome="${k}">${l}</button>`).join('')}</div>
+      <button class="btn blue" data-act="finish" ${canFinish ? '' : 'disabled'}>${isReplay ? 'Завершить: переигровка' : 'Завершить игру и начислить очки'}</button>` : ''}
     <button class="btn danger" data-act="cancel">Отменить игру без начисления</button>
   </div>`;
 }
@@ -278,7 +387,7 @@ function adminCreate(prev) {
     gameNo: prev?.gameNo ? String(prev.gameNo + 1) : '',
     stream: prev?.stream || '',
     mode: 'list', paste: '', nicks: Array(10).fill(''),
-    unranked: false,
+    unranked: false, hard: prev?.level === 'hard',
   };
   const f = ui.form;
   const modeBody = f.mode === 'list'
@@ -300,6 +409,12 @@ function adminCreate(prev) {
       <button class="chip ${f.mode === 'none' ? 'on' : ''}" data-nmode="none">Без ников</button>
     </div>
     ${modeBody}
+    <p class="muted" style="margin:12px 0 0">Уровень игры</p>
+    <div class="chips">
+      <button class="chip ${!f.hard ? 'on' : ''}" data-act="lvl" data-id="0">Обычный</button>
+      <button class="chip ${f.hard ? 'on' : ''}" data-act="lvl" data-id="1">Сложный ×${S.scoring.hardMult}</button>
+    </div>
+    ${f.hard ? `<p class="muted">На сложном уровне ты отмечаешь «вскрытых» чёрных — за них перестают давать очки с этого круга.</p>` : ''}
     ${S.me.isAdmin
       ? `<label class="check"><input type="checkbox" data-f="unranked" ${f.unranked ? 'checked' : ''}><span>Вне зачёта — очки этой игры не пойдут в рейтинг сезона</span></label>`
       : `<p class="muted offrank-note">Твои игры идут вне зачёта: зрители видят результат, но в рейтинг сезона очки не попадают.</p>`}
@@ -343,13 +458,21 @@ function renderRating() {
         <span class="pl">${p.place}</span>${avatar(p.name, p.photo)}<span class="nm">${esc(p.name)}</span>
         <span class="pt">${ICON.coin}${p.points}</span></li>`).join('')}</ul>`
       : `<div class="empty">${seasonTab ? 'Пока пусто — очки начисляются после вскрытия ролей.' : 'Итоги появятся после вскрытия ролей.'}</div>`}
-    ${!seasonTab && g && g.top && !g.ranked ? `<p class="muted">Эта игра была вне зачёта — в рейтинг сезона не пошла.</p>` : ''}
-    <p class="muted" style="margin-top:14px">Очки: +${S.scoring.vote} за голос в чёрного, +${S.scoring.triple} за каждого чёрного в тройке круга.</p>
+    ${!seasonTab && g && g.outcome === 'replay' ? `<p class="muted">Последняя игра закончилась переигровкой — очки не начислялись.</p>`
+      : !seasonTab && g && g.top && !g.ranked ? `<p class="muted">Эта игра была вне зачёта — в рейтинг сезона не пошла.</p>` : ''}
+    ${!seasonTab && g && g.outcomeLabel && g.outcome !== 'replay' ? `<p class="muted">Исход: ${esc(g.outcomeLabel)}</p>` : ''}
+    <p class="muted" style="margin-top:14px">Чем раньше угадал — тем дороже. Лучший ход до +${S.scoring.lh[3]}, тройка и голос дешевеют с каждым кругом. Подробно — во вкладке «Как играть».</p>
     ${S.me.isAdmin && seasonTab ? `<div class="card"><h3>Новый сезон</h3>
       <p class="muted">Сезон — отрезок времени (например, месяц), за который считается рейтинг. Новый сезон: текущая таблица сохранится в Google Таблице отдельным листом, у всех очки начнутся с нуля. Делай это, когда хочешь подвести итоги и наградить лидера.</p>
       <input class="field" data-f="seasonName" placeholder="Сезон ${S.season.n + 1}" value="${esc(ui.seasonName)}">
       <button class="btn danger" data-act="newSeason">Начать новый сезон</button></div>` : ''}
-    ${S.me.isAdmin && seasonTab ? hostsAdminCard() : ''}`;
+    ${S.me.isAdmin && seasonTab ? hostsAdminCard() : ''}
+    <div class="card notif">
+      <div><b>Приглашения на новые игры</b>
+        <p class="muted">Бот пишет, когда создана новая игра. Сигналы «приём открыт» приходят только в игре, которую ты открыл.</p></div>
+      <button class="switch ${S.me.invites !== false ? 'on' : ''}" data-act="invites" aria-label="Приглашения"><i></i></button>
+    </div>
+    ${hostRequestLink()}`;
 }
 
 function hostsAdminCard() {
@@ -386,12 +509,13 @@ $app.addEventListener('input', e => {
 });
 
 $app.addEventListener('click', async e => {
-  const el = e.target.closest('[data-seat],[data-act],[data-pick],[data-mode],[data-lb],[data-nmode],[data-evhow],[data-evseat]');
+  const el = e.target.closest('[data-seat],[data-act],[data-pick],[data-mode],[data-lb],[data-nmode],[data-evhow],[data-evseat],[data-outcome],[data-evround]');
   if (!el || !S) return;
   const g = S.game;
 
   if (el.dataset.lb) { ui.lb = el.dataset.lb; haptic(); return render(); }
   if (el.dataset.evhow) { ui.ev.how = el.dataset.evhow; if (ui.ev.how !== 'vote' && ui.ev.seats.size > 1) ui.ev.seats.clear(); haptic(); return render(); }
+  if (el.dataset.evround) { ui.ev.round = +el.dataset.evround; haptic(); return render(); }
   if (el.dataset.evseat) {
     const n = +el.dataset.evseat, set = ui.ev.seats;
     if (set.has(n)) set.delete(n);
@@ -400,7 +524,8 @@ $app.addEventListener('click', async e => {
   }
   if (el.dataset.nmode) { ui.form.mode = el.dataset.nmode; haptic(); return render(); }
   if (el.dataset.pick) { ui.pick = el.dataset.pick; haptic(); return render(); }
-  if (el.dataset.mode !== undefined) { ui.mode = el.dataset.mode || null; ui.finish.clear(); haptic(); return render(); }
+  if (el.dataset.mode !== undefined) { ui.mode = el.dataset.mode || null; ui.finish.clear(); ui.outcome = null; haptic(); return render(); }
+  if (el.dataset.outcome) { ui.outcome = el.dataset.outcome; haptic(); return render(); }
   if (el.dataset.seat) return onSeat(+el.dataset.seat, g);
 
   switch (el.dataset.act) {
@@ -414,31 +539,53 @@ $app.addEventListener('click', async e => {
       if (await ask('Отменить игру? Прогнозы будут удалены, очки не начислятся.')) { ui.mode = null; act('host_cancel'); }
       break;
     case 'finish':
-      if (await ask(`Чёрные: ${[...ui.finish].sort((a, b) => a - b).join(', ')}. Завершить игру и начислить очки?`)) {
-        await act('host_finish', { blacks: [...ui.finish] }, g.ranked ? 'Игра завершена, очки начислены' : 'Игра завершена (вне зачёта)');
-        ui.mode = null; ui.finish.clear(); ui.form = null; render();
+    {
+      const label = OUTCOMES.find(o => o[0] === ui.outcome)[1];
+      const bl = [...ui.finish].sort((a, b) => a - b);
+      const q = ui.outcome === 'replay'
+        ? 'Завершить игру как переигровку? Очки не начислятся, всем придёт сообщение.'
+        : `${label}. Чёрные: ${bl.join(', ')}. Завершить игру и начислить очки?`;
+      if (await ask(q)) {
+        await act('host_finish', { outcome: ui.outcome, blacks: bl },
+          ui.outcome === 'replay' ? 'Переигровка: очки не начислены' : g.ranked ? 'Игра завершена, очки начислены' : 'Игра завершена (вне зачёта)');
+        ui.mode = null; ui.finish.clear(); ui.outcome = null; ui.form = null; render();
       }
       break;
+    }
     case 'create': {
       const f = ui.form;
       if (!f.tournament.trim() && !f.gameNo.trim() && !(await ask('Не указаны турнир и номер игры. Всё равно запустить?'))) break;
       await act('host_create', {
         tournament: f.tournament, gameNo: f.gameNo, stream: f.stream,
-        nicks: f.mode === 'none' ? [] : f.nicks, unranked: !!f.unranked,
+        nicks: f.mode === 'none' ? [] : f.nicks, unranked: !!f.unranked, hard: !!f.hard,
       }, 'Игра создана, зрители получили уведомление');
       if (S.game && S.game.status === 'live') ui.form = null;
       break;
     }
-    case 'evOpen': ui.ev = { how: g.round <= 1 ? 'zero' : 'vote', seats: new Set() }; haptic(); return render();
+    case 'evOpen': ui.ev = { how: g.round <= 1 ? 'zero' : 'vote', seats: new Set(), round: Math.max(g.round, 1) }; haptic(); return render();
     case 'evClose': ui.ev = null; return render();
     case 'evSave': {
-      const seats = [...ui.ev.seats], how = ui.ev.how;
+      const seats = [...ui.ev.seats], how = ui.ev.how, round = ui.ev.round;
       ui.ev = null; render();
+      if (how === 'reveal') return act('host_reveal', { seat: seats[0], round }, `№${seats[0]} — вскрыт чёрный с круга ${round}`);
       return act('host_out', { seats, how }, `Отмечено: ${OUT[how].label}`);
     }
+    case 'rvUndo': return act('host_reveal', { seat: +el.dataset.id, round: null }, 'Отметка «вскрыт» снята');
+    case 'copyPrev': {
+      const r = g.rounds[g.rounds.length - 1], pv = g.rounds[g.rounds.length - 2];
+      r.triple = [...pv.triple]; render(); haptic();
+      return act('triple', { seats: r.triple }, 'Тройка повторена');
+    }
     case 'evUndo': return act('host_out', { seats: [+el.dataset.id], how: null }, 'Игрок возвращён в игру');
+    case 'lvl': ui.form.hard = el.dataset.id === '1'; haptic(); return render();
+    case 'invites': {
+      const on = S.me.invites === false;
+      S.me.invites = on; render();
+      return act('set_invites', { on }, on ? 'Приглашения включены' : 'Приглашения выключены — бот не будет звать на новые игры');
+    }
+    case 'hideHint': store.set('hideHostHint', '1'); return render();
     case 'requestHost':
-      if (await ask('Отправить админу заявку в ведущие?')) act('request_host', {}, 'Заявка отправлена');
+      if (await ask('Ведущий может создавать свои игры для друзей (вне зачёта). Отправить админу заявку?')) act('request_host', {}, 'Заявка отправлена');
       break;
     case 'approve': return act('admin_approve', { id: el.dataset.id }, 'Права ведущего выданы');
     case 'reject': return act('admin_reject', { id: el.dataset.id }, 'Заявка отклонена');
