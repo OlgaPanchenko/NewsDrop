@@ -1,4 +1,5 @@
 'use strict';
+const APP_VERSION = '4 · шериф и дон'; // меняй вместе с ?v= в index.html
 const tg = window.Telegram && window.Telegram.WebApp;
 try { tg.ready(); tg.expand(); tg.setHeaderColor('#0b0c0a'); tg.setBackgroundColor('#0b0c0a'); } catch (_) {}
 
@@ -350,7 +351,8 @@ function renderGuide(inline) {
     <details><summary>Можно передумать?</summary><p>Да, пока приём открыт — меняй тройку и голос сколько угодно. В зачёт идёт последний выбор.</p></details>
     <details><summary>Что значит «вне зачёта» и «переигровка»?</summary><p>«Вне зачёта» — игра для развлечения, очки в рейтинг сезона не идут. «Переигровка» — игру пересыграют, очки не начисляются никому.</p></details>
     <details><summary>Откуда моё имя в рейтинге?</summary><p>Из твоего профиля Telegram. Регистрация не нужна — Telegram сам передаёт имя и фото, когда ты открываешь игру через бота.</p></details>
-  </div>`;
+  </div>
+  <p class="muted center" style="font-size:11px">Версия ${APP_VERSION}</p>`;
 }
 
 function adminPanel(g, canRun, canCreate) {
